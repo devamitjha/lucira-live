@@ -22,7 +22,11 @@ function getSelectionFromCookies(cookieStore) {
 
 export async function GET() {
   const cookieStore = await cookies();
-  return NextResponse.json(getSelectionFromCookies(cookieStore));
+  return NextResponse.json(getSelectionFromCookies(cookieStore), {
+    headers: {
+      'Cache-Control': 'no-store, max-age=0, must-revalidate'
+    }
+  });
 }
 
 export async function PATCH(req) {

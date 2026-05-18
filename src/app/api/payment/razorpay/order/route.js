@@ -10,34 +10,41 @@ function toSubunits(amount) {
 
 function buildPaymentMethod(body = {}, draftTotal = 0) {
   const method = body?.paymentMethod || {};
-  const type = method?.type === "partial_cod" ? "partial_cod" : "razorpay";
+  const requestedType = method?.type || "razorpay";
   const grandTotal = Number(draftTotal || 0);
 
-  if (type !== "partial_cod") {
-    return {
-      type: "razorpay",
-      prepaidAmount: grandTotal,
-      codAmount: 0,
-      grandTotal,
-    };
+  console.log(`[PAYMENT API] Requested Type: ${requestedType}, Draft Total: ${grandTotal}, Frontend Payment Method:`, JSON.stringify(method));
+
+  // Handle Partial COD ONLY if specifically requested
+  if (requestedType === "partial_cod") {
+      if (grandTotal <= 0 || grandTotal >= 50000) {
+        console.log(`[PAYMENT API] Partial COD requested but ineligible (Total: ${grandTotal}). Falling back to full Razorpay.`);
+        return {
+          type: "razorpay",
+          prepaidAmount: grandTotal,
+          codAmount: 0,
+          grandTotal,
+        };
+      }
+
+      const prepaidAmount = grandTotal * 0.2;
+      const codAmount = grandTotal - prepaidAmount;
+
+      console.log(`[PAYMENT API] Partial COD Applied. Prepaid: ${prepaidAmount}, COD: ${codAmount}`);
+      return {
+        type: "partial_cod",
+        prepaidAmount: Math.round(prepaidAmount),
+        codAmount: Math.round(codAmount),
+        grandTotal,
+      };
   }
 
-  if (grandTotal <= 0 || grandTotal >= 50000) {
-    return {
-      type: "razorpay",
-      prepaidAmount: grandTotal,
-      codAmount: 0,
-      grandTotal,
-    };
-  }
-
-  const prepaidAmount = grandTotal * 0.2;
-  const codAmount = grandTotal - prepaidAmount;
-
+  // Always enforce 100% prepaid for Razorpay Secure
+  console.log(`[PAYMENT API] Razorpay Secure Applied. Full Amount: ${grandTotal}`);
   return {
-    type: "partial_cod",
-    prepaidAmount: Math.round(prepaidAmount),
-    codAmount: Math.round(codAmount),
+    type: "razorpay",
+    prepaidAmount: grandTotal,
+    codAmount: 0,
     grandTotal,
   };
 }
@@ -85,12 +92,25 @@ export async function POST(req) {
     }
 
     const client = await clientPromise;
-    const db = client.db("next_local_db");
-    const cart = await db.collection("carts").findOne(buildCartLookup({ userId, sessionId }));
+    const db = client.db("shopify-app");
+    const cartLookup = buildCartLookup({ userId, sessionId });
+    console.log("[PAYMENT API] Fetching cart with lookup:", JSON.stringify(cartLookup));
+    
+    // Fetch the MOST RECENT cart to avoid stale data issues
+    const carts = await db.collection("carts")
+      .find(cartLookup)
+      .sort({ updatedAt: -1 })
+      .limit(1)
+      .toArray();
+    
+    const cart = carts[0];
 
     if (!cart?.items?.length) {
+      console.log("[PAYMENT API] Cart not found or empty.");
       return NextResponse.json({ error: "Your cart is empty" }, { status: 400 });
     }
+
+    console.log("[PAYMENT API] Cart items found:", cart.items.map(i => `${i.title} (${i.quantity})`).join(", "));
 
     const shippingAddress = body?.shippingAddress;
     const billingAddress = body?.billingAddress;
@@ -102,6 +122,12 @@ export async function POST(req) {
     const nectorValue = Number(nectorPoints?.fiat_value || 0);
 
     const subtotalBeforeDiscount = cart.items.reduce((acc, item) => acc + (Number(item.price || 0) * Number(item.quantity || 1)), 0);
+    
+    // Calculate subtotal excluding insurance for correct percentage coupon calculation (matching frontend)
+    const insuranceItem = cart.items.find(item => item.variantId === "gid://shopify/ProductVariant/47709366026458");
+    const insuranceValue = insuranceItem ? (Number(insuranceItem.price || 0) * Number(insuranceItem.quantity || 1)) : 0;
+    const subtotalForCoupon = subtotalBeforeDiscount - insuranceValue;
+
     const finalTotal = Math.max(0, subtotalBeforeDiscount - nectorValue);
 
     // Prepare line items
@@ -172,7 +198,7 @@ export async function POST(req) {
     if (couponValue > 0) {
       let totalCouponDiscountAmount = couponValue;
       if (appliedCoupon?.valueType === "PERCENTAGE") {
-        totalCouponDiscountAmount = (subtotalBeforeDiscount * couponValue) / 100;
+        totalCouponDiscountAmount = (subtotalForCoupon * couponValue) / 100;
       }
 
       finalDiscount = {
@@ -214,12 +240,16 @@ export async function POST(req) {
       draftOrderInput.email = customer.email;
     }
 
+    console.log("[PAYMENT API] Draft Order Input:", JSON.stringify(draftOrderInput, null, 2));
+
     const shopifyDraftData = await shopifyAdminFetch(`
       mutation draftOrderCreate($input: DraftOrderInput!) {
         draftOrderCreate(input: $input) {
           draftOrder {
             id
             totalPrice
+            subtotalPrice
+            totalTax
           }
           userErrors {
             field
@@ -228,6 +258,8 @@ export async function POST(req) {
         }
       }
     `, { input: draftOrderInput });
+
+    console.log("[PAYMENT API] Shopify Draft Data Response:", JSON.stringify(shopifyDraftData, null, 2));
 
     const draftOrder = shopifyDraftData.draftOrderCreate.draftOrder;
     const userErrors = shopifyDraftData.draftOrderCreate.userErrors;

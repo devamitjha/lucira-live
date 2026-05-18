@@ -17,6 +17,7 @@ import {
   restoreGuestWishlist,
   clearWishlist,
 } from "@/redux/features/wishlist/wishlistSlice";
+import { useDebounce } from "@/hooks/useDebounce";
 
 const INSURANCE_VARIANT_ID = "gid://shopify/ProductVariant/47709366026458";
 const GOLDCOIN_VARIANT_ID = "gid://shopify/ProductVariant/47661824082138";
@@ -166,24 +167,31 @@ export default function MainHeader() {
     return () => window.removeEventListener("profile-updated", handleProfileUpdate);
   }, [dispatch, user?.id, user?.avatar, wishlistItems.length, guestWishlistItems.length]);
 
-  const handleSearchChange = async (e) => {
-    const query = e.target.value;
-    setSearchQuery(query);
-    
-    if (query.length > 1) {
-      setIsSearching(true);
-      try {
-        const res = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
-        const data = await res.json();
-        setSearchResults(data.results || []);
-      } catch (err) {
-        console.error("Search error:", err);
-      } finally {
-        setIsSearching(false);
+  const debouncedSearchQuery = useDebounce(searchQuery, 500);
+
+  useEffect(() => {
+    const performSearch = async () => {
+      if (debouncedSearchQuery.length > 1) {
+        setIsSearching(true);
+        try {
+          const res = await fetch(`/api/search?q=${encodeURIComponent(debouncedSearchQuery)}`);
+          const data = await res.json();
+          setSearchResults(data.results || []);
+        } catch (err) {
+          console.error("Search error:", err);
+        } finally {
+          setIsSearching(false);
+        }
+      } else {
+        setSearchResults([]);
       }
-    } else {
-      setSearchResults([]);
-    }
+    };
+
+    performSearch();
+  }, [debouncedSearchQuery]);
+
+  const handleSearchChange = (e) => {
+    setSearchQuery(e.target.value);
   };
 
   const handleKeyDown = (e) => {

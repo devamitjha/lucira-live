@@ -105,7 +105,9 @@ export async function getArticleByBlogAndHandleStorefront(blogHandle, articleHan
     }
   `;
 
-  const data = await shopifyStorefrontFetch(query, { blogHandle, articleHandle });
+  const data = await shopifyStorefrontFetch(query, { blogHandle, articleHandle }, {
+    next: { revalidate: 21600 } // ✅ 6 hours cache
+  });
   const article = data?.blog?.articleByHandle;
 
   if (!article) return null;
@@ -324,7 +326,9 @@ export async function getArticlesByBlogHandleStorefront(blogHandle) {
     }
   `;
 
-  const data = await shopifyStorefrontFetch(query, { blogHandle });
+  const data = await shopifyStorefrontFetch(query, { blogHandle }, {
+    next: { revalidate: 21600 } // ✅ 6 hours cache
+  });
   const articles = data?.blog?.articles?.edges?.map(edge => ({
     ...edge.node,
     blogId: data.blog.id,

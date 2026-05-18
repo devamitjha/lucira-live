@@ -11,9 +11,10 @@ export function normalizeUserId(userId) {
 
 export function buildCartLookup({ userId, sessionId }) {
   const normalizedUserId = normalizeUserId(userId);
-  const conditions = [];
-
+  
+  // 1. If we have an authenticated user, strictly only look for their cart
   if (normalizedUserId) {
+    const conditions = [];
     const numericUserId = Number(normalizedUserId);
     if (Number.isSafeInteger(numericUserId)) {
       conditions.push({ userId: normalizedUserId });
@@ -21,14 +22,13 @@ export function buildCartLookup({ userId, sessionId }) {
     } else {
       conditions.push({ userId: normalizedUserId });
     }
+    return conditions.length === 1 ? conditions[0] : { $or: conditions };
   }
 
+  // 2. Otherwise, look for the guest session cart
   if (sessionId) {
-    conditions.push({ sessionId });
+    return { sessionId };
   }
 
-  if (conditions.length === 0) return {};
-  if (conditions.length === 1) return conditions[0];
-
-  return { $or: conditions };
+  return {};
 }

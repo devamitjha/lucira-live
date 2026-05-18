@@ -1,39 +1,29 @@
 import { NextResponse } from "next/server";
-import clientPromise from "@/lib/mongodb";
 
-export async function GET(request) {
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://127.0.0.1:8080";
+
+export async function GET(req) {
   try {
-    const { searchParams } = new URL(request.url);
+    const { searchParams } = new URL(req.url);
     const pincode = searchParams.get("pincode");
 
     if (!pincode) {
-      return NextResponse.json({ error: "Pincode is required" }, { status: 400 });
+      return NextResponse.json({ error: "Pincode required" }, { status: 400 });
     }
 
-    const client = await clientPromise;
-    const db = client.db();
-    const collection = db.collection("pincodes");
+    const res = await fetch(`${BACKEND_URL}/api/pincodes/check?pincode=${pincode}`);
+    const data = await res.json();
 
-    const record = await collection.findOne({ pincode: pincode.trim() });
-
-    if (!record) {
-      return NextResponse.json({ 
-        success: true, 
-        deliverable: false,
-        message: "Sorry, we do not deliver to this pincode yet." 
-      });
-    }
-
+    // The backend returns { success: true/false, data: { ... } }
+    // We transform it for the frontend
     return NextResponse.json({
-      success: true,
-      deliverable: true,
-      data: record
+      success: data.success,
+      deliverable: data.success, // If found in DB, it's deliverable
+      data: data.data
     });
+
   } catch (error) {
-    console.error("Check pincode error:", error);
-    return NextResponse.json(
-      { success: false, error: error.message },
-      { status: 500 }
-    );
+    console.error("❌ Pincode check error:", error);
+    return NextResponse.json({ success: false, deliverable: false }, { status: 500 });
   }
 }

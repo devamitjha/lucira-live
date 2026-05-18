@@ -371,12 +371,12 @@ export default function ShippingPage() {
             id: s.shopifyId,
             name: s.name,
             code: s.name,
-            address: s.address1 + (s.address2 ? `, ${s.address2}` : ""),
-            city: s.city,
-            state: s.provinceCode || s.province,
-            zip: s.zip,
-            lat: s.latitude,
-            lng: s.longitude,
+            address: s.address || "",
+            city: s.city || "",
+            state: s.provinceCode || s.province || "",
+            zip: s.zip || "",
+            lat: s.latitude || 0,
+            lng: s.longitude || 0,
             readyTime: "Usually ready in 24 hours",
           }));
           setDbStores(mappedStores);

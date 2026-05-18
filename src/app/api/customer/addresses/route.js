@@ -82,7 +82,7 @@ async function fetchCustomerAddresses(customerAccessToken) {
 
   try {
     const client = await clientPromise;
-    const db = client.db("next_local_db");
+    const db = client.db("shopify-app");
     const addressMetaCollection = db.collection("customer_address_meta");
     const metaRows = addressIds.length
       ? await addressMetaCollection
@@ -152,7 +152,7 @@ async function upsertAddressMeta(addressId, gstin = "") {
 
   try {
     const client = await clientPromise;
-    const db = client.db("next_local_db");
+    const db = client.db("shopify-app");
     const addressMetaCollection = db.collection("customer_address_meta");
 
     if (!normalizedGstin) {
@@ -182,7 +182,7 @@ async function upsertAddressMeta(addressId, gstin = "") {
 async function deleteAddressMeta(addressId) {
   try {
     const client = await clientPromise;
-    const db = client.db("next_local_db");
+    const db = client.db("shopify-app");
     const addressMetaCollection = db.collection("customer_address_meta");
     await addressMetaCollection.deleteOne({ addressId });
   } catch (error) {

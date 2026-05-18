@@ -7,7 +7,10 @@ const formatPrice = (num) => {
   return new Intl.NumberFormat("en-IN").format(Math.round(num));
 };
 
+export const dynamic = "force-dynamic";
+
 export async function GET(req) {
+  // No caching for debugging
   const { searchParams } = new URL(req.url);
   const variantId = searchParams.get("variantId");
   const productId = searchParams.get("productId");
@@ -43,8 +46,6 @@ export async function GET(req) {
         }
       }
     `;
-
-    // Optional: Add logic to verify variant belongs to productId if needed
     
     const data = await shopifyAdminFetch(query, {
       id: gid,
@@ -182,6 +183,10 @@ export async function GET(req) {
         ...breakup,
         original_total: originalGrandTotal,
         total_savings: totalSavingsAmt
+      }
+    }, {
+      headers: {
+        'Cache-Control': 'public, s-maxage=3600, stale-while-revalidate=59'
       }
     });
 

@@ -44,8 +44,13 @@ export async function GET(req) {
   const adminToken = req.cookies.get('admin_token');
   
   if (adminToken?.value === 'lucira_admin_authenticated') {
-    return NextResponse.json({ authenticated: true });
+    return NextResponse.json({ authenticated: true }, {
+      headers: { 'Cache-Control': 'no-store, max-age=0, must-revalidate' }
+    });
   }
   
-  return NextResponse.json({ authenticated: false }, { status: 401 });
+  return NextResponse.json({ authenticated: false }, { 
+    status: 401,
+    headers: { 'Cache-Control': 'no-store, max-age=0, must-revalidate' }
+  });
 }

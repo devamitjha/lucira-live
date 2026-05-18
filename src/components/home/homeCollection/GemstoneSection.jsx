@@ -64,7 +64,7 @@ export default function GemstoneSection() {
           ? ""
           : `&filter.p.product_type=${encodeURIComponent(activeTab)}`;
 
-        const res = await fetch(`/api/products/search?q=gemstone&limit=10${filterParam}`);
+        const res = await fetch(`/api/products/search?q=gemstone&limit=20${filterParam}`);
         const data = await res.json();
         if (data.products) {
           setProducts(data.products);

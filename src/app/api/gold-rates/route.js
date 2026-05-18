@@ -23,7 +23,11 @@ export async function GET() {
 
     const rates = JSON.parse(data.shop.metal_prices.value);
 
-    return NextResponse.json(rates);
+    return NextResponse.json(rates, {
+      headers: {
+        'Cache-Control': 'public, s-maxage=3600, stale-while-revalidate=59'
+      }
+    });
   } catch (error) {
     console.error("Failed to fetch gold rates:", error);
     return NextResponse.json({ error: "Failed to fetch gold rates" }, { status: 500 });

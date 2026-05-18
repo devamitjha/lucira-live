@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { shopifyStorefrontFetch, shopifyAdminFetch } from "@/lib/shopify";
 import { calculatePriceBreakup } from "@/lib/priceEngine";
+import { fetchNectorReviews } from "@/lib/nector";
 import clientPromise from "@/lib/mongodb";
 
 const SORT_MAP = {
@@ -15,6 +16,10 @@ const parseFilters = (rawFilters) => {
   try {
     const parsed =
       typeof rawFilters === "string" ? JSON.parse(rawFilters) : rawFilters;
+
+    if (Array.isArray(parsed)) {
+      return parsed;
+    }
 
     const shopifyFilters = [];
     Object.values(parsed).forEach((group) => {
@@ -53,17 +58,21 @@ const getCollectionTotalCount = async (handle) => {
     }
   `;
 
-  const data = await shopifyAdminFetch(query, {
-    query: `handle:${handle}`,
-  });
+  try {
+    const data = await shopifyAdminFetch(query, {
+      query: `handle:${handle}`,
+    });
 
-  const count =
-    data?.collections?.edges?.[0]?.node?.productsCount?.count ?? 0;
+    const count =
+      data?.collections?.edges?.[0]?.node?.productsCount?.count ?? 0;
 
-  collectionCountCache.set(cacheKey, count);
-  setTimeout(() => collectionCountCache.delete(cacheKey), 10 * 60 * 1000);
+    collectionCountCache.set(cacheKey, count);
+    setTimeout(() => collectionCountCache.delete(cacheKey), 10 * 60 * 1000);
 
-  return count;
+    return count;
+  } catch (e) {
+    return 0;
+  }
 };
 
 export async function GET(req) {
@@ -87,6 +96,35 @@ export async function GET(req) {
     const activeFilters = parseFilters(filters);
     const sortConfig = SORT_MAP[sort] || SORT_MAP.best_selling;
 
+    // Extract dynamic filters from searchParams for Shopify
+    const shopifyFilters = [];
+    searchParams.forEach((value, key) => {
+      if (key.startsWith("filter.")) {
+        try {
+          if (key === "filter.v.price.gte" || key === "filter.v.price.lte") {
+            const existingPrice = shopifyFilters.find(f => f.price);
+            if (existingPrice) {
+              if (key === "filter.v.price.gte") existingPrice.price.min = parseFloat(value);
+              else existingPrice.price.max = parseFloat(value);
+            } else {
+              shopifyFilters.push({ price: { 
+                min: key === "filter.v.price.gte" ? parseFloat(value) : 0,
+                max: key === "filter.v.price.lte" ? parseFloat(value) : 1000000 
+              }});
+            }
+          } else {
+            try {
+                shopifyFilters.push(JSON.parse(value));
+            } catch(e) {
+                shopifyFilters.push({ [key.replace("filter.", "")]: value });
+            }
+          }
+        } catch (e) {}
+      }
+    });
+
+    const finalFilters = shopifyFilters.length > 0 ? shopifyFilters : activeFilters;
+
     // 1. Fetch Shop-wide pricing data (Admin API)
     let metalRates = {};
     let stonePricingDB = [];
@@ -99,13 +137,12 @@ export async function GET(req) {
           }
         }
       `;
-      const shopData = await shopifyAdminFetch(shopPricingQuery);
+      const shopData = await shopifyAdminFetch(shopPricingQuery, {}, { next: { revalidate: 3600 } });
       if (shopData?.shop?.metalPrices?.value) metalRates = JSON.parse(shopData.shop.metalPrices.value);
       if (shopData?.shop?.stonePricing?.value) stonePricingDB = JSON.parse(shopData.shop.stonePricing.value);
-    } catch (e) {
+      } catch (e) {
       console.warn("⚠️ Shop pricing metadata fetch failed:", e.message);
-    }
-
+      }
     // 2. Fetch Collection (Storefront API)
     const COLLECTION_QUERY = `
       query CollectionProducts(
@@ -147,6 +184,17 @@ export async function GET(req) {
                 createdAt
                 tags
                 featuredImage { url }
+                productMetafields: metafields(identifiers: [
+                  {namespace: "ornaverse", key: "weight"},
+                  {namespace: "ornaverse", key: "quality"},
+                  {namespace: "ornaverse", key: "carat_range"},
+                  {namespace: "ornaverse", key: "lead_time"},
+                  {namespace: "ornaverse", key: "components"},
+                  {namespace: "custom", key: "matching_product"}
+                ]) {
+                  key
+                  value
+                }
                 media(first: 20) {
                   edges {
                     node {
@@ -166,10 +214,12 @@ export async function GET(req) {
                     }
                   }
                 }
-                variants(first: 200) {
+                variants(first: 50) {
                   edges {
                     node {
                       id
+                      title
+                      sku
                       price { amount }
                       compareAtPrice { amount }
                       availableForSale
@@ -179,6 +229,13 @@ export async function GET(req) {
                         url
                         altText
                       }
+                      metal_weight: metafield(namespace: "ornaverse", key: "metal_weight") { value }
+                      gross_weight: metafield(namespace: "ornaverse", key: "gross_weight") { value }
+                      top_width: metafield(namespace: "ornaverse", key: "top_width") { value }
+                      top_height: metafield(namespace: "ornaverse", key: "top_height") { value }
+                      diamonds_meta: metafield(namespace: "ornaverse", key: "diamonds") { value }
+                      gemstones_meta: metafield(namespace: "ornaverse", key: "gemstones") { value }
+                      components: metafield(namespace: "ornaverse", key: "components") { value }
                     }
                   }
                 }
@@ -190,13 +247,23 @@ export async function GET(req) {
     `;
 
     const ALL_PRODUCTS_QUERY = `
-      query AllProducts($first: Int!, $after: String, $sortKey: ProductSortKeys, $reverse: Boolean, $filters: [ProductFilter!]) {
-        products(first: $first, after: $after, sortKey: $sortKey, reverse: $reverse, filters: $filters) {
+      query AllProducts($first: Int!, $after: String, $sortKey: ProductSortKeys, $reverse: Boolean, $query: String) {
+        products(first: $first, after: $after, sortKey: $sortKey, reverse: $reverse, query: $query) {
           pageInfo { hasNextPage endCursor }
           filters { label type values { label count input } }
           edges {
             node {
               id title handle description descriptionHtml createdAt tags featuredImage { url }
+              productMetafields: metafields(identifiers: [
+                {namespace: "ornaverse", key: "weight"},
+                {namespace: "ornaverse", key: "quality"},
+                {namespace: "ornaverse", key: "carat_range"},
+                {namespace: "ornaverse", key: "lead_time"},
+                {namespace: "ornaverse", key: "components"}
+              ]) {
+                key
+                value
+              }
               media(first: 20) {
                 edges {
                   node {
@@ -209,9 +276,16 @@ export async function GET(req) {
               variants(first: 50) {
                 edges {
                   node {
-                    id price { amount } compareAtPrice { amount }
+                    id title sku price { amount } compareAtPrice { amount }
                     availableForSale quantityAvailable selectedOptions { name value }
                     image { url altText }
+                    metal_weight: metafield(namespace: "ornaverse", key: "metal_weight") { value }
+                    gross_weight: metafield(namespace: "ornaverse", key: "gross_weight") { value }
+                    top_width: metafield(namespace: "ornaverse", key: "top_width") { value }
+                    top_height: metafield(namespace: "ornaverse", key: "top_height") { value }
+                    diamonds_meta: metafield(namespace: "ornaverse", key: "diamonds") { value }
+                    gemstones_meta: metafield(namespace: "ornaverse", key: "gemstones") { value }
+                    components: metafield(namespace: "ornaverse", key: "components") { value }
                   }
                 }
               }
@@ -223,13 +297,22 @@ export async function GET(req) {
 
     let storefrontData;
     if (handle === "all") {
+      let filterQuery = "";
+      if (finalFilters.length > 0) {
+          finalFilters.forEach(f => {
+              if (f.productType) filterQuery += ` product_type:${f.productType}`;
+              if (f.tag) filterQuery += ` tag:${f.tag}`;
+              if (f.variantOption) filterQuery += ` variant_option:${f.variantOption.name}:${f.variantOption.value}`;
+          });
+      }
+
       storefrontData = await shopifyStorefrontFetch(ALL_PRODUCTS_QUERY, {
         first: limit,
         after: cursor || null,
         sortKey: sortConfig.sortKey === "BEST_SELLING" ? "BEST_SELLING" : sortConfig.sortKey === "PRICE" ? "PRICE" : "TITLE",
         reverse: sortConfig.reverse,
-        filters: activeFilters,
-      });
+        query: filterQuery.trim() || null,
+      }, { cache: 'no-store' });
     } else {
       storefrontData = await shopifyStorefrontFetch(COLLECTION_QUERY, {
         handle,
@@ -237,18 +320,18 @@ export async function GET(req) {
         after: cursor || null,
         sortKey: sortConfig.sortKey,
         reverse: sortConfig.reverse,
-        filters: activeFilters,
-      });
+        filters: finalFilters,
+      }, { cache: 'no-store' });
     }
 
     const collectionData = storefrontData?.collectionByHandle;
     const productsData = handle === "all" ? storefrontData?.products : collectionData?.products;
 
     if (!productsData) {
-      return NextResponse.json({ 
-        collection: handle === "all" ? { title: "All Products", description: "All of our products" } : (collectionData || {}), 
-        products: [], filters: {}, pageInfo: {}, totalProducts: 0 
-      });
+      return NextResponse.json({
+        collection: handle === "all" ? { title: "All Products", description: "All of our products" } : (collectionData || {}),
+        products: [], filters: {}, pageInfo: {}, totalProducts: 0
+      }, { headers: { "Cache-Control": "no-store" } });
     }
 
     // 3. Fetch Variant Metafields in Bulk (Admin API)
@@ -270,13 +353,12 @@ export async function GET(req) {
             }
           }
         `;
-        
-        // Ensure unique IDs and Chunk to avoid Shopify limit of 250
+
         const uniqueGids = [...new Set(variantGids)];
         const CHUNK_SIZE = 100;
         for (let i = 0; i < uniqueGids.length; i += CHUNK_SIZE) {
           const chunk = uniqueGids.slice(i, i + CHUNK_SIZE);
-          const adminData = await shopifyAdminFetch(variantQuery, { ids: chunk });
+          const adminData = await shopifyAdminFetch(variantQuery, { ids: chunk }, { cache: 'no-store' });
           adminData?.nodes?.forEach(node => {
             if (node?.metafield?.value) {
               variantConfigs[node.id] = node.metafield.value;
@@ -289,16 +371,25 @@ export async function GET(req) {
     }
 
     // 4. Process Products & Calculate Metadata
-    const products = await Promise.all(
+    let products = (await Promise.all(
       productsData.edges.map(async ({ node }) => {
+        const productMetafields = {};
+        node.productMetafields?.forEach(m => {
+          if (m) productMetafields[m.key] = m.value;
+        });
+
         const variants = node.variants.edges.map(({ node: v }) => {
           const options = {};
           v.selectedOptions.forEach((o) => {
             options[o.name.toLowerCase()] = o.value;
           });
 
-          // A. Try Dynamic Calculation
           let dynamic = {};
+          let diamondDiscount = 0;
+          let makingDiscount = 0;
+          let fallbackDiamonds = [];
+          let configMetalPurity = null;
+
           const configValue = variantConfigs[v.id];
           if (configValue) {
             try {
@@ -309,11 +400,23 @@ export async function GET(req) {
                 clarity: breakup.diamond.clarity,
                 color: breakup.diamond.color,
                 weight: breakup.metal.weight,
+                diamondCharges: breakup.diamond.final,
+                components: configValue
               };
+              diamondDiscount = breakup.diamond.discount_percent || 0;
+              makingDiscount = breakup.making_charges.discount_percent || 0;
+              configMetalPurity = config.purity;
+
+              if (config.advanced_stone_config) {
+                fallbackDiamonds = config.advanced_stone_config.map(s => ({
+                   quality: s.pricing_id,
+                   pieces: s.stone_quantity,
+                   weight: s.stone_weight
+                }));
+              }
             } catch (e) {}
           }
 
-          // B. Robust Option Fallbacks
           const getOpt = (keys) => {
             for (const key of keys) {
               const lowerKey = key.toLowerCase();
@@ -322,41 +425,95 @@ export async function GET(req) {
             return null;
           };
 
-          const carat = dynamic.carat ?? getOpt(["carat", "carat weight", "diamond weight", "center stone weight"]);
-          const clarity = dynamic.clarity ?? getOpt(["clarity", "diamond clarity", "clarity grade"]);
-          const diamond_color = dynamic.color ?? getOpt(["diamond color", "color grade", "stone color"]);
-          const weight = dynamic.weight ?? getOpt(["weight", "gold weight", "metal weight", "net weight"]);
-          const metal_color = getOpt(["color", "metal", "metal color", "material color"]);
+          // Technical specifications mapping
+          let comps = null;
+          try {
+            comps = v.components?.value ? JSON.parse(v.components.value) : null;
+          } catch(e) {}
+          
+          const metalComp = comps?.components?.find(c => c.item_group_name === "Gold");
+          const diamondComps = comps?.components?.filter(c => c.item_group_name === "Diamond") || [];
+          const gemstoneComps = comps?.components?.filter(c => c.item_group_name === "Gemstone" || c.item_group_name === "Color Stone") || [];
+
+          let metal_purity = metalComp?.karat_code ? `${metalComp.karat_code}K` : null;
+          let metal_color = metalComp?.stone_color_code && metalComp.stone_color_code !== "NA" ? metalComp.stone_color_code : null;
+          
+          if (!metal_color) {
+            const t = v.title || "";
+            if (t.toLowerCase().includes('rose')) metal_color = 'Rose Gold';
+            else if (t.toLowerCase().includes('white')) metal_color = 'White Gold';
+            else if (t.toLowerCase().includes('yellow')) metal_color = 'Yellow Gold';
+            else if (t.toLowerCase().includes('platinum')) metal_color = 'Platinum';
+          }
+
+          const diamonds = diamondComps.map(d => ({
+            quality: d.quality_code && d.quality_code !== "NA" ? d.quality_code : (d.purity || "VVS-VS, EF"),
+            shape: d.shape_code,
+            pieces: d.pieces,
+            weight: d.weight
+          }));
+
+          const gemstones = gemstoneComps.map(g => ({
+            color: g.stone_color_code,
+            shape: g.shape_code,
+            pieces: g.pieces,
+            weight: g.weight
+          }));
+
+          const inStock = v.availableForSale === true && (v.quantityAvailable === null || Number(v.quantityAvailable) > 0);
 
           return {
-            id: v.id.split("/").pop(),
+            id: (v.id || "").split("/").pop() || Math.random().toString(),
+            shopifyId: v.id,
+            sku: v.sku,
             size: options.size || null,
-            color: metal_color,
-            carat,
-            clarity,
-            diamond_color,
-            weight,
-            price: Number(v.price.amount),
+            color: getOpt(["color", "metal", "metal color", "material color"]),
+            carat: dynamic.carat ?? getOpt(["carat", "carat weight"]),
+            clarity: dynamic.clarity ?? getOpt(["clarity"]),
+            diamond_color: dynamic.color ?? getOpt(["diamond color"]),
+            weight: dynamic.weight ?? getOpt(["weight"]),
+            diamondCharges: dynamic.diamondCharges || 0,
+            price: Number(v.price?.amount || 0),
             compare_price: v.compareAtPrice ? Number(v.compareAtPrice.amount) : null,
-            inStock: v.availableForSale === true && Number(v.quantityAvailable || 0) > 0,
+            inStock: inStock,
             image: v.image?.url || null,
             altText: v.image?.altText || "",
+            metafields: {
+                metal_purity: metal_purity || configMetalPurity || getOpt(["metal purity", "purity"]),
+                metal_color: metal_color,
+                metal_weight: dynamic.weight || v.metal_weight?.value || metalComp?.weight,
+                gross_weight: v.gross_weight?.value,
+                top_width: v.top_width?.value,
+                top_height: v.top_height?.value,
+                diamonds: diamonds.length > 0 ? diamonds : (fallbackDiamonds.length > 0 ? fallbackDiamonds : (v.diamonds_meta?.value ? JSON.parse(v.diamonds_meta.value) : [])),
+                gemstones: gemstones.length > 0 ? gemstones : (v.gemstones_meta?.value ? JSON.parse(v.gemstones_meta.value) : []),
+                components: v.components?.value,
+                variant_config: configValue
+            },
+            hasSimilar: true,
+            diamondDiscount,
+            makingDiscount
           };
         });
 
         let selectedVariant = variants.find((v) => v.inStock) || variants[0];
 
         const images = [];
-        let hasVideo = false;
+        let video = null;
 
         node.media?.edges?.forEach(({ node: m }) => {
           if (m.mediaContentType === "IMAGE") {
             images.push({
               url: m.image.url,
-              altText: m.image.altText || "",
+              alt: m.image.altText || "",
             });
           } else if (m.mediaContentType === "VIDEO") {
-            hasVideo = true;
+            video = {
+                url: m.sources?.[0]?.url,
+                mimeType: m.sources?.[0]?.mimeType,
+                preview: node.featuredImage?.url,
+                sources: m.sources
+            };
           }
         });
 
@@ -364,17 +521,19 @@ export async function GET(req) {
         thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
         const isNew = new Date(node.createdAt) > thirtyDaysAgo;
 
-        const labelTag = node.tags?.find(tag => 
+        const labelTag = node.tags?.find(tag =>
           ["best seller", "hot", "trending", "limited"].includes(tag.toLowerCase())
         );
 
         return {
-          id: node.id.split("/").pop(),
+          id: (node.id || "").split("/").pop() || Math.random().toString(),
+          shopifyId: node.id,
           title: node.title,
           handle: node.handle,
           description: node.description,
           descriptionHtml: node.descriptionHtml,
-          video: hasVideo,
+          tags: node.tags,
+          video,
           isNew: isNew,
           label: labelTag || (isNew ? "New" : null),
           images,
@@ -389,39 +548,43 @@ export async function GET(req) {
           image: selectedVariant.image || node.featuredImage?.url,
           altText: selectedVariant.altText || "",
           variants,
+          productMetafields,
+          diamondDiscount: selectedVariant.diamondDiscount,
+          makingDiscount: selectedVariant.makingDiscount,
+          hasSimilar: true,
+          reviewStats: { count: 0, average: 0 }
         };
       })
-    );
+    )).filter(Boolean);
 
-    // 5. Fetch Review Stats from MongoDB in Bulk
+    // 5. Fetch Review Stats from Nector in Parallel
     try {
-      const client = await clientPromise;
-      const db = client.db("next_local_db");
-      const productsCollection = db.collection("products");
-
-      const productHandles = products.map(p => p.handle);
-      const dbProducts = await productsCollection.find(
-        { handle: { $in: productHandles } },
-        { projection: { handle: 1, reviewStats: 1 } }
-      ).toArray();
-
-      const reviewStatsMap = {};
-      dbProducts.forEach(dbp => {
-        if (dbp.reviewStats) {
-          reviewStatsMap[dbp.handle] = dbp.reviewStats;
-        }
-      });
-
-      products.forEach(p => {
-        p.reviewStats = reviewStatsMap[p.handle] || { count: 0, average: 0 };
-      });
-    } catch (e) {
-      console.warn("⚠️ Bulk review stats fetch failed:", e.message);
-    }
+      await Promise.all(
+        products.map(async (p) => {
+          try {
+            const reviews = await fetchNectorReviews(p.shopifyId);
+            p.reviewStats = {
+              count: reviews.count || 0,
+              average: reviews.average || 0
+            };
+          } catch (e) {
+            p.reviewStats = { count: 0, average: 0 };
+          }
+        })
+      );
+    } catch (e) {}
 
     const processedFilters = {};
     productsData.filters.forEach((f) => {
-      if (f.type === "PRICE_RANGE") return;
+      if (f.type === "PRICE_RANGE") {
+          processedFilters["Price"] = {
+              min: 0,
+              max: Math.max(...f.values.map(v => {
+                  try { return JSON.parse(v.input).price.max || 1000000; } catch(e) { return 1000000; }
+              }))
+          };
+          return;
+      }
       processedFilters[f.label] = f.values.map((v) => ({
         label: v.label,
         count: v.count,
@@ -430,47 +593,6 @@ export async function GET(req) {
     });
 
     let totalProducts = await getCollectionTotalCount(handle);
-    
-    // If filters are applied, find the total count from the Shopify returned filter values.
-    if (activeFilters.length > 0 && productsData.filters) {
-      try {
-        const parsedFilters = filters ? JSON.parse(filters) : {};
-        let maxFilteredTotal = 0;
-        let anyGroupFound = false;
-
-        // Try to find the total by looking at all filter groups.
-        // For groups with no selections, the sum of all value counts is the total filtered set.
-        // For groups with selections, the sum of selected value counts is the total.
-        // We take the MAX across all groups to be as accurate as possible.
-        for (const f of productsData.filters) {
-          if (f.type === "PRICE_RANGE") continue;
-          
-          const selectedForGroup = parsedFilters[f.label] || [];
-          let groupTotal = 0;
-
-          if (selectedForGroup.length === 0) {
-            groupTotal = f.values.reduce((sum, v) => sum + v.count, 0);
-          } else {
-            const selectedLabels = new Set(selectedForGroup.map(o => o.label));
-            groupTotal = f.values
-              .filter(v => selectedLabels.has(v.label))
-              .reduce((sum, v) => sum + v.count, 0);
-          }
-
-          if (groupTotal > maxFilteredTotal) {
-            maxFilteredTotal = groupTotal;
-            anyGroupFound = true;
-          }
-        }
-
-        if (anyGroupFound) {
-          // Ensure totalProducts is at least the number of products returned in this response
-          totalProducts = Math.max(maxFilteredTotal, products.length);
-        }
-      } catch (e) {
-        console.warn("Failed to calculate filtered total:", e);
-      }
-    }
 
     return NextResponse.json(
       {
@@ -487,15 +609,14 @@ export async function GET(req) {
       },
       {
         headers: {
-          "Cache-Control":
-            "public, s-maxage=3600, stale-while-revalidate=3600",
-        },
+          'Cache-Control': 'public, s-maxage=3600, stale-while-revalidate=59'
+        }
       }
-  );
+    );
   } catch (err) {
     console.error("❌ Collection API error:", err);
     return NextResponse.json(
-      { error: "Server error" },
+      { error: "Server error", message: err.message },
       { status: 500 }
     );
   }

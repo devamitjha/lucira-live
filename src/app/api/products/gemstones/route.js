@@ -9,7 +9,7 @@ export async function GET(request) {
     const tab = searchParams.get("tab") || "All";
 
     const client = await clientPromise;
-    const db = client.db("next_local_db");
+    const db = client.db("shopify-app");
     const productsCollection = db.collection("products");
 
     // 1. Build Base Gemstone Query - MUST be a gemstone product and NOT a diamond product
@@ -70,6 +70,10 @@ export async function GET(request) {
         ...p,
         reviews: p.reviews || (p.reviewStats?.usedFallback ? null : p.reviewStats) || null
       }))
+    }, {
+      headers: {
+        'Cache-Control': 'public, s-maxage=3600, stale-while-revalidate=59'
+      }
     });
 
   } catch (error) {

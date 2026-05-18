@@ -76,7 +76,7 @@ export async function POST(req) {
 
     // 3. Save Shopify URL to MongoDB
     const client = await clientPromise;
-    const db = client.db("next_local_db");
+    const db = client.db("shopify-app");
     const collection = db.collection("customer_profiles");
 
     await collection.updateOne(
@@ -130,7 +130,7 @@ export async function GET() {
 
     // 2. Fallback to MongoDB
     const client = await clientPromise;
-    const db = client.db("next_local_db");
+    const db = client.db("shopify-app");
     const collection = db.collection("customer_profiles");
 
     const profile = await collection.findOne({ customerId: customerId });

@@ -5,6 +5,7 @@ import Image from "next/image";
 import { Play, X, ChevronRight } from "lucide-react";
 import { Sheet } from "react-modal-sheet";
 import { SizeGuideMobile } from "./SizeGuideMobile";
+import { useSelector } from "react-redux";
 
 export function ProductCustomizerMobile({
   activeColor,
@@ -23,6 +24,7 @@ export function ProductCustomizerMobile({
   getStoreDisplayName,
 }) {
   const [isOpen, setIsOpen] = useState(false);
+  const collectionContext = useSelector((state) => state.user.collectionContext);
 
   const getGoldColor = (metal) => {
     if (metal.includes("White")) return "linear-gradient(143.06deg, #dfdfdf 29.61%, #f3f3f3 48.83%, #dfdfdf 66.43%)";
@@ -32,21 +34,33 @@ export function ProductCustomizerMobile({
 
   const combinations = [];
   product.variants?.forEach((v) => {
-    if (!v.color) return;
-    const parts = String(v.color).trim().split(" ");
-    if (parts.length >= 2) {
-      const karat = parts[0];
-      const metal = parts.slice(1).join(" ");
-      if (!combinations.find((c) => c.karat === karat && c.metal === metal)) {
-        combinations.push({ karat, metal });
-      }
+    const karat = v.metafields?.metal_purity || String(v.color || v.title || "").split(" ")[0];
+    const metal = v.metafields?.metal_color || String(v.color || v.title || "").split(" ").slice(1).join(" ");
+    
+    if (karat && metal && !combinations.find((c) => c.karat === karat && c.metal === metal)) {
+      combinations.push({ karat, metal });
     }
   });
 
-  const metalOrder = ["White Gold", "Yellow Gold", "Rose Gold"];
+  const handles = product.collectionHandles || [];
+  const isStrict9kt = collectionContext === "9kt-collection" &&
+    handles.includes("9kt-collection") &&
+    !handles.some(h => h !== "9kt-collection" && h !== "all" && h !== product.type?.toLowerCase() &&
+      ["sports-collection", "cotton-candy", "hexa-collection", "solitaire-collection"].includes(h));
+
+  const karatOrder = ["9KT", "14KT", "18KT"];
+  const metalOrder = ["Yellow Gold", "Rose Gold", "White Gold"];
+
   combinations.sort((a, b) => {
-    if (a.karat !== b.karat) return a.karat.localeCompare(b.karat);
-    return metalOrder.indexOf(a.metal) - metalOrder.indexOf(b.metal);
+    const aKaratVal = parseInt(String(a.karat).replace(/\D/g, ""), 10) || 0;
+    const bKaratVal = parseInt(String(b.karat).replace(/\D/g, ""), 10) || 0;
+
+    if (aKaratVal !== bKaratVal) return aKaratVal - bKaratVal;
+    
+    const aMetalIdx = metalOrder.findIndex(m => a.metal.toLowerCase().includes(m.split(" ")[0].toLowerCase()));
+    const bMetalIdx = metalOrder.findIndex(m => b.metal.toLowerCase().includes(m.split(" ")[0].toLowerCase()));
+    
+    return (aMetalIdx === -1 ? 99 : aMetalIdx) - (bMetalIdx === -1 ? 99 : bMetalIdx);
   });
 
   return (
@@ -130,9 +144,10 @@ export function ProductCustomizerMobile({
                             style={{ background: getGoldColor(metal) }}
                           ></div>
                           <div className="text-[11px] text-center text-black leading-tight uppercase font-bold flex flex-col gap-0.5">
-                            <span>{karat}</span>
+                            <span>{parseInt(String(karat).replace(/\D/g, ""), 10)}KT</span>
                             <span>{metal.replace(" Gold", "")}</span>
                           </div>
+
                         </div>
                       ))}
                     </div>
@@ -145,7 +160,7 @@ export function ProductCustomizerMobile({
                       <div className="space-y-4 pb-4">
                         <div className="flex justify-between items-center">
                           <h4 className="text-sm font-bold uppercase tracking-wider">
-                            Select {product.type.replace(/s$/, "")} Size:{" "}
+                            Select {(product.type || product.productType || "").replace(/s$/, "")} Size:{" "}
                             <span className="text-gray-600 normal-case font-medium ml-1">
                               {selectedSize} IND
                             </span>

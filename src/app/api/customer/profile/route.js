@@ -50,7 +50,11 @@ export async function GET() {
       phone: data.customer.phone || data.customer.defaultAddress?.phone || null
     };
 
-    return NextResponse.json({ customer: customerData });
+    return NextResponse.json({ customer: customerData }, {
+      headers: {
+        'Cache-Control': 'no-store, max-age=0, must-revalidate'
+      }
+    });
   } catch (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }

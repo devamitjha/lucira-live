@@ -1,18 +1,19 @@
-import clientPromise from "@/lib/mongodb";
 import { NextResponse } from "next/server";
+
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://127.0.0.1:8080";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
-    const client = await clientPromise;
-    const db = client.db("next_local_db");
-    const storesCollection = db.collection("stores");
+    const res = await fetch(`${BACKEND_URL}/api/stores`, {
+        next: { revalidate: 3600 } // Cache for 1 hour
+    });
+    const data = await res.json();
 
-    const stores = await storesCollection.find({}).toArray();
-
-    return NextResponse.json({ stores });
+    return NextResponse.json(data);
   } catch (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    console.error("❌ Stores proxy error:", error);
+    return NextResponse.json({ stores: [] });
   }
 }

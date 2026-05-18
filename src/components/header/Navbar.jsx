@@ -5,7 +5,6 @@ import { motion, AnimatePresence } from "framer-motion";
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
-import { MEGA_MENU as STATIC_MENU } from "@/data/megaMenu";
 import { ArrowRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useMenu } from "@/hooks/useMenu";
@@ -16,16 +15,14 @@ export default function Navbar({ hideTop }) {
   const pathname = usePathname();
   const timeoutRef = useRef(null);
 
-  const MEGA_MENU = menuData || STATIC_MENU;
+  // No fallback to STATIC_MENU as requested ("api only", "dont use fall back")
+  const MEGA_MENU = menuData || [];
 
   const handleEnter = (index) => {
     if (timeoutRef.current) clearTimeout(timeoutRef.current);
-    
-    // If a menu is already open, switch immediately for better UX
     if (activeMenu !== null) {
       setActiveMenu(index);
     } else {
-      // If no menu is open, wait 150ms to ensure the hover is intentional
       timeoutRef.current = setTimeout(() => {
         setActiveMenu(index);
       }, 150);
@@ -49,9 +46,13 @@ export default function Navbar({ hideTop }) {
 
   const activeMenuPath = [...MEGA_MENU]
     .filter(
-      (menu) =>
-        pathname === menu.href ||
-        (menu.href !== "/" && pathname.startsWith(menu.href + "/"))
+      (menu) => {
+        const href = menu.href;
+        if (!href || href === "#") return false;
+        if (href === "/" && pathname === "/") return true;
+        if (href !== "/" && pathname.startsWith(href + "/")) return true;
+        return pathname === href;
+      }
     )
     .sort((a, b) => b.href.length - a.href.length)[0]?.href;
 
@@ -65,32 +66,37 @@ export default function Navbar({ hideTop }) {
 
   return (
     <nav className="relative bg-white border-b border-gray-100 z-[90]">
-      <div className="container-main relative flex items-center min-h-[40px]">
-        {/* Left: Sticky Logo */}
-        <motion.div
-          initial={false}
-          animate={{
-            opacity: hideTop ? 1 : 0,
-            x: hideTop ? 0 : -20,
-            width: hideTop ? "auto" : 0,
-            marginRight: hideTop ? 32 : 0,
-          }}
-          transition={{ duration: 0.3, ease: "easeInOut" }}
-          className="overflow-hidden flex-shrink-0"
-        >
-          <Link href="/" className="block">
-            <Image
-              src="https://cdn.shopify.com/s/files/1/0739/8516/3482/files/dark_brown_Logo_icon_2.svg?v=1777366090"
-              alt="Lucira Jewelry"
-              width={40}
-              height={40}
-              className="w-8 h-8 lg:w-9 lg:h-9 object-contain"
-            />
-          </Link>
-        </motion.div>
+      <div className="container-main relative flex items-center min-h-[40px] justify-center">
+        {/* Sticky Logo - Absolute positioned to align with main logo */}
+        <div className="absolute left-0 top-1/2 -translate-y-1/2">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.8 }}
+            animate={{
+              opacity: hideTop ? 1 : 0,
+              scale: hideTop ? 1 : 0.8,
+            }}
+            transition={{ duration: 0.2, ease: "easeInOut" }}
+            className={cn(
+              "overflow-hidden flex-shrink-0",
+              hideTop ? "pointer-events-auto" : "pointer-events-none"
+            )}
+          >
+            <Link href="/" className="block">
+              <Image
+                src="https://cdn.shopify.com/s/files/1/0739/8516/3482/files/dark_brown_Logo_icon_2.svg?v=1777366090"
+                alt="Lucira Jewelry"
+                width={40}
+                height={40}
+                className="w-8 h-8 lg:w-9 lg:h-9 object-contain"
+                unoptimized={true}
+              />
+            </Link>
 
-        {/* Navigation Menu */}
-        <ul className="flex items-center lg:text-xs xl:text-sm uppercase transition-all duration-300 gap-12 mx-auto">
+          </motion.div>
+        </div>
+
+        {/* Navigation Menu - Stays centered */}
+        <ul className="flex items-center lg:text-xs xl:text-sm uppercase transition-all duration-300 gap-12">
           {MEGA_MENU.map((menu, index) => {
             const isActive =
               pathname === menu.href ||
@@ -119,10 +125,12 @@ export default function Navbar({ hideTop }) {
                   {menu.label}
                 </Link>
 
+                {/* Underline */}
                 {(isHovered || (isActive && activeMenu === null)) && (
                   <motion.div
                     layoutId="nav-underline"
                     className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary"
+                    transition={{ type: "spring", stiffness: 380, damping: 30 }}
                   />
                 )}
               </li>
@@ -135,10 +143,10 @@ export default function Navbar({ hideTop }) {
         {activeMenu !== null &&
           hasDropdown(MEGA_MENU[activeMenu]) && (
             <motion.div
-              initial={{ opacity: 0, y: -10 }}
+              initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -10 }}
-              transition={{ duration: 0.3, ease: [0.33, 1, 0.68, 1] }}
+              exit={{ opacity: 0, y: 10 }}
+              transition={{ duration: 0.2 }}
               onMouseEnter={() => handleEnter(activeMenu)}
               onMouseLeave={handleLeave}
               className="absolute left-0 top-full w-full bg-white shadow-xl z-50 border-t border-gray-200"
@@ -201,6 +209,7 @@ export default function Navbar({ hideTop }) {
                               alt={item.title}
                               fill
                               priority={true}
+                              unoptimized={item.image?.includes("cdn.shopify.com")}
                               className="object-cover transition duration-500 group-hover:scale-105"
                             />
                             <div className="absolute inset-0 bg-linear-to-t from-black/70 via-black/20 to-transparent" />
@@ -315,6 +324,7 @@ export default function Navbar({ hideTop }) {
                                             alt={item.label}
                                             fill
                                             priority={j < 6}
+                                            unoptimized={String(item.menuIcon || item.megaMenuImage || item.icon).includes("cdn.shopify.com")}
                                             className="object-contain p-1 transition-opacity duration-300"
                                           />
                                         </div>
@@ -344,6 +354,7 @@ export default function Navbar({ hideTop }) {
                                 alt={card.title}
                                 fill
                                 priority={true}
+                                unoptimized={card.image?.includes("cdn.shopify.com")}
                                 className="object-cover transition-opacity duration-300"
                               />
                               <div className="absolute inset-0 bg-linear-to-t from-black/70 via-black/20 to-transparent" />
@@ -376,7 +387,13 @@ export default function Navbar({ hideTop }) {
                               <Link key={i} href={item.href || "#"} onClick={closeMenu} className="flex items-center gap-3 group">
                                 {item.icon && (
                                   <div className="relative h-10 w-10 rounded-full bg-zinc-50 flex items-center justify-center overflow-hidden border border-transparent group-hover:border-primary transition-all">
-                                    <Image src={item.icon} alt={item.label} fill className="object-contain p-2" />
+                                    <Image 
+                                      src={item.icon} 
+                                      alt={item.label} 
+                                      fill 
+                                      unoptimized={item.icon?.includes("cdn.shopify.com")}
+                                      className="object-contain p-2" 
+                                    />
                                   </div>
                                 )}
                                 <span className="text-sm text-zinc-600 font-semibold group-hover:text-primary uppercase transition-colors whitespace-nowrap tracking-wide">

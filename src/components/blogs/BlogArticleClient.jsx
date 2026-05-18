@@ -64,7 +64,7 @@ export default function BlogArticleClient({
               <div className="meta-item">
                 <span className="meta-label">Views</span>
                 <span className="meta-value">
-                  {article.views?.value || `${Math.floor(Math.abs(parseInt(article.id.split('/').pop()) || 0) % 800) + 350}+`}
+                  {article.views?.value || `${Math.floor(Math.abs(parseInt(article.id ? article.id.split('/').pop() : "0") || 0) % 800) + 350}+`}
                 </span>
               </div>
             </div>

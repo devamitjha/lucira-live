@@ -473,7 +473,7 @@ export async function POST(req) {
     }
 
     const client = await clientPromise;
-    const db = client.db("next_local_db");
+    const db = client.db("shopify-app");
     const cartCollection = db.collection("carts");
     const paymentCollection = db.collection("shopify_order_payments");
     const ordersCollection = db.collection("orders");

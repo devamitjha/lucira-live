@@ -6,13 +6,13 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "generate-menu": "node generate_menu_json.js"
   },
   "dependencies": {
     "@opensearch-project/opensearch": "^3.5.1",
     "@reduxjs/toolkit": "^2.11.2",
     "@shopify/shopify-api": "^13.0.0",
-    "@tanstack/react-query": "^5.90.21",
     "@tanstack/react-table": "^8.21.3",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

@@ -1,242 +1,473 @@
-import clientPromise from "@/lib/mongodb";
 import { NextResponse } from "next/server";
-import { resolveSearchMatch } from "@/lib/search";
+import { shopifyStorefrontFetch, shopifyAdminFetch } from "@/lib/shopify";
+import { calculatePriceBreakup } from "@/lib/priceEngine";
+import { fetchNectorReviews } from "@/lib/nector";
+import clientPromise from "@/lib/mongodb";
+
+const SORT_MAP = {
+  featured: { sortKey: "RELEVANCE", reverse: false },
+  relevance: { sortKey: "RELEVANCE", reverse: false },
+  best_selling: { sortKey: "BEST_SELLING", reverse: false },
+  az: { sortKey: "TITLE", reverse: false },
+  za: { sortKey: "TITLE", reverse: true },
+  price_low_high: { sortKey: "PRICE", reverse: false },
+  price_high_low: { sortKey: "PRICE", reverse: true },
+  date_new_old: { sortKey: "CREATED_AT", reverse: true },
+  date_old_new: { sortKey: "CREATED_AT", reverse: false },
+};
+
+const parseFilters = (rawFilters) => {
+  if (!rawFilters) return [];
+  try {
+    const parsed = typeof rawFilters === "string" ? JSON.parse(rawFilters) : rawFilters;
+    if (Array.isArray(parsed)) return parsed;
+    const shopifyFilters = [];
+    Object.values(parsed).forEach((group) => {
+      if (!Array.isArray(group)) return;
+      group.forEach((opt) => {
+        if (!opt?.input) return;
+        shopifyFilters.push(typeof opt.input === "string" ? JSON.parse(opt.input) : opt.input);
+      });
+    });
+    return shopifyFilters;
+  } catch {
+    return [];
+  }
+};
 
 export async function GET(request) {
   try {
     const { searchParams } = new URL(request.url);
-    const handle = searchParams.get("handle");
+    const handle = searchParams.get("handle") || "all";
+    const query = searchParams.get("q") || "";
     const limit = parseInt(searchParams.get("limit") || "20");
-    const page = parseInt(searchParams.get("page") || "1");
-    const query = searchParams.get("q");
-    // If q is present and no sort is specified, default to relevance
-    const sort = searchParams.get("sort") || (query ? "relevance" : "featured");
+    const cursor = searchParams.get("cursor");
+    const sort = searchParams.get("sort") || "featured";
+    const filtersRaw = searchParams.get("filters");
 
-    const SORT_MAP = {
-      featured: { diamondDiscount: -1, "reviewStats.count": -1, title: 1, _id: 1 },
-      relevance: { score: { $meta: "textScore" }, _id: 1 },
-      best_selling: { "reviewStats.count": -1, title: 1, _id: 1 },
-      az: { title: 1, _id: 1 },
-      za: { title: -1, _id: 1 },
-      price_low_high: { price: 1, _id: 1 },
-      price_high_low: { price: -1, _id: 1 },
-      date_new_old: { createdAt: -1, _id: 1 },
-      date_old_new: { createdAt: 1, _id: 1 },
-      created_at_desc: { createdAt: -1, _id: 1 },
-      created_at_asc: { createdAt: 1, _id: 1 },
-      discount_desc: { diamondDiscount: -1, makingDiscount: -1, _id: 1 },
-      };
-
+    const activeFilters = parseFilters(filtersRaw);
     const sortConfig = SORT_MAP[sort] || SORT_MAP.featured;
 
-    const client = await clientPromise;
-    const db = client.db("next_local_db");
-    const productsCollection = db.collection("products");
-    const shopifyCollections = db.collection("shopify_collections");
-
-    let filter = { status: "ACTIVE", isPublished: true };
-
-    // 1. Collection filtering
-    if (handle && handle !== "all") {
-      const isRealCollection = await shopifyCollections.findOne({ handle });
-
-      if (isRealCollection || !handle.startsWith("all-")) {
-        filter.collectionHandles = handle;
-      } else {
-        // Handle "all-rings", "all-earrings", etc.
-        const typeKeyword = handle.replace("all-", "").replace(/-/g, " ");
-        // singularize (very basic: rings -> ring, earrings -> earring)
-        const singularType = typeKeyword.replace(/s$/, "");
-        
-        const handleFilter = {
-          $or: [
-            { type: { $regex: `^${singularType}$`, $options: "i" } }, // Exact type match
-            { type: { $regex: `^${typeKeyword}$`, $options: "i" } },
-            { collectionHandles: handle },
-            { tags: { $regex: `^${singularType}$`, $options: "i" } }
-          ]
-        };
-        
-        // If it's rings, we MUST exclude earrings
-        if (singularType.toLowerCase() === "ring") {
-          filter.type = { $not: /earring/i };
-        }
-
-        filter = { ...filter, ...handleFilter };
-      }
-    }
-
-    // 2. Definitive Field Mapping
-    const KEY_MAP = {
-      // Simple keys (current frontend)
-      "in_store_available": "variants.metafields.in_store_available",
-      "ring_size": "variants.metafields.ring_size_inventory",
-      "shop_for": "productMetafields.shop_for",
-      "weight": "productMetafields.weight",
-      "shape": "variants.metafields.diamonds.shape",
-      "gemstone_shape": "variants.metafields.gemstones.shape",
-      "carat_range": "productMetafields.carat_range",
-      "material_type": "productMetafields.material_type",
-      "product_type": "type",
-      "metal_purity": "variants.metafields.metal_purity",
-      "finishing": "productMetafields.finishing",
-      "fit": "productMetafields.fit",
-      
-      // Shopify-style keys (support both)
-      "filter.v.m.custom.in_store_available": "variants.metafields.in_store_available",
-      "filter.p.m.custom.ring_size": "variants.metafields.ring_size_inventory",
-      "filter.p.m.custom.shop_for": "productMetafields.shop_for",
-      "filter.p.m.custom.weight": "productMetafields.weight",
-      "filter.v.m.custom.shape": "variants.metafields.diamonds.shape",
-      "filter.v.m.custom.gemstone_shape": "variants.metafields.gemstones.shape",
-      "filter.p.m.custom.carat_range": "productMetafields.carat_range",
-      "filter.p.m.custom.material_type": "productMetafields.material_type",
-      "filter.p.product_type": "type",
-      "filter.v.m.custom.metal_purity": "variants.metafields.metal_purity",
-      "filter.p.m.custom.finishing": "productMetafields.finishing",
-      "filter.p.m.custom.fit": "productMetafields.fit"
-    };
-
-    const variantFilters = {};
-    const productFilters = {};
-
-    // Fetch store mappings to resolve store names back to GIDs
-    const storesCollection = db.collection("stores");
-    const stores = await storesCollection.find({}).toArray();
-    const nameToGidMap = {};
-    stores.forEach(s => {
-      let displayName = s.name;
-      if (displayName.includes("Divinecarat")) displayName = "Malad";
-      if (displayName === "BO1") displayName = "Borivali";
-      if (displayName === "CS1") displayName = "Chembur";
-      if (displayName === "PS1") displayName = "Pune";
-      if (displayName === "NOS18") displayName = "Noida";
-      nameToGidMap[displayName] = s.shopifyId;
-    });
-
+    // Extract dynamic filters from searchParams for Shopify
+    const shopifyFilters = [];
     searchParams.forEach((value, key) => {
-      if (!value || key === "handle" || key === "page" || key === "limit" || key === "sort" || key === "q") return;
-      
-      let mongoKey = KEY_MAP[key];
-      
-      // Fallback dynamic mapping if not in KEY_MAP
-      if (!mongoKey) {
-        if (key.startsWith("filter.v.m.")) {
-          mongoKey = `variants.metafields.${key.split(".").slice(4).join(".")}`;
-        } else if (key.startsWith("filter.p.m.")) {
-          mongoKey = `productMetafields.${key.split(".").slice(4).join(".")}`;
-        } else if (key === "filter.p.product_type") {
-          mongoKey = "type";
-        }
-      }
-
-      if (mongoKey) {
-        // Resolve store name to GID if it's the in_store_available filter
-        let finalValue = value;
-        if (mongoKey === "variants.metafields.in_store_available" && nameToGidMap[value]) {
-          finalValue = nameToGidMap[value];
-        }
-
-        if (mongoKey.startsWith("variants.")) {
-          const vKey = mongoKey.replace("variants.", "");
-          if (!variantFilters[vKey]) variantFilters[vKey] = [];
-          variantFilters[vKey].push(finalValue);
-        } else {
-          if (!productFilters[mongoKey]) productFilters[mongoKey] = [];
-          productFilters[mongoKey].push(finalValue);
-        }
+      if (key.startsWith("filter.")) {
+        try {
+          if (key === "filter.v.price.gte" || key === "filter.v.price.lte") {
+            const existingPrice = shopifyFilters.find(f => f.price);
+            if (existingPrice) {
+              if (key === "filter.v.price.gte") existingPrice.price.min = parseFloat(value);
+              else existingPrice.price.max = parseFloat(value);
+            } else {
+              shopifyFilters.push({ price: { 
+                min: key === "filter.v.price.gte" ? parseFloat(value) : 0,
+                max: key === "filter.v.price.lte" ? parseFloat(value) : 1000000 
+              }});
+            }
+          } else if (key === "filter.p.product_type") {
+              shopifyFilters.push({ productType: value });
+          } else {
+            try {
+                shopifyFilters.push(JSON.parse(value));
+            } catch(e) {
+                shopifyFilters.push({ [key.replace("filter.", "")]: value });
+            }
+          }
+        } catch (e) {}
       }
     });
 
-    // Apply product-level filters (including type)
-    Object.entries(productFilters).forEach(([mKey, mValues]) => {
-      const uniqueValues = [...new Set(mValues)];
-      const expandedValues = [];
-      uniqueValues.forEach(v => {
-        expandedValues.push(v);
-        expandedValues.push(JSON.stringify([v])); // Support JSON encoded strings in DB
+    const finalFilters = shopifyFilters.length > 0 ? shopifyFilters : activeFilters;
+
+    // 1. Fetch Shop-wide pricing data (Admin API)
+    let metalRates = {};
+    let stonePricingDB = [];
+    try {
+      const shopPricingQuery = `
+        query {
+          shop {
+            metalPrices: metafield(namespace: "DI-GoldPrice", key: "metal_prices") { value }
+            stonePricing: metafield(namespace: "DI-GoldPrice", key: "stone_pricing") { value }
+          }
+        }
+      `;
+      const shopData = await shopifyAdminFetch(shopPricingQuery);
+      if (shopData?.shop?.metalPrices?.value) metalRates = JSON.parse(shopData.shop.metalPrices.value);
+      if (shopData?.shop?.stonePricing?.value) stonePricingDB = JSON.parse(shopData.shop.stonePricing.value);
+    } catch (e) {
+      console.warn("⚠️ Shop pricing metadata fetch failed:", e.message);
+    }
+
+    const COLLECTION_QUERY = `
+      query SearchProducts(
+        $handle: String!
+        $first: Int!
+        $after: String
+        $sortKey: ProductCollectionSortKeys
+        $reverse: Boolean
+        $filters: [ProductFilter!]
+      ) {
+        collectionByHandle(handle: $handle) {
+          products(
+            first: $first
+            after: $after
+            sortKey: $sortKey
+            reverse: $reverse
+            filters: $filters
+          ) {
+            pageInfo { hasNextPage endCursor }
+            edges {
+              node {
+                id title handle description descriptionHtml createdAt tags
+                featuredImage { url }
+                productMetafields: metafields(identifiers: [
+                  {namespace: "ornaverse", key: "weight"},
+                  {namespace: "ornaverse", key: "quality"},
+                  {namespace: "ornaverse", key: "carat_range"},
+                  {namespace: "ornaverse", key: "lead_time"},
+                  {namespace: "ornaverse", key: "components"}
+                ]) {
+                  key
+                  value
+                }
+                media(first: 20) {
+                  edges {
+                    node {
+                      mediaContentType
+                      ... on MediaImage { image { url altText } }
+                      ... on Video { sources { url mimeType } }
+                    }
+                  }
+                }
+                variants(first: 50) {
+                  edges {
+                    node {
+                      id sku price { amount } compareAtPrice { amount }
+                      availableForSale quantityAvailable selectedOptions { name value }
+                      image { url altText }
+                      metal_weight: metafield(namespace: "ornaverse", key: "metal_weight") { value }
+                      gross_weight: metafield(namespace: "ornaverse", key: "gross_weight") { value }
+                      top_width: metafield(namespace: "ornaverse", key: "top_width") { value }
+                      top_height: metafield(namespace: "ornaverse", key: "top_height") { value }
+                      diamonds_meta: metafield(namespace: "ornaverse", key: "diamonds") { value }
+                      gemstones_meta: metafield(namespace: "ornaverse", key: "gemstones") { value }
+                      components: metafield(namespace: "ornaverse", key: "components") { value }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    `;
+
+    const SEARCH_QUERY = `
+      query KeywordSearch($query: String!, $first: Int!, $after: String, $filters: [ProductFilter!]) {
+        search(query: $query, first: $first, after: $after, productFilters: $filters, types: [PRODUCT]) {
+          pageInfo { hasNextPage endCursor }
+          edges {
+            node {
+              ... on Product {
+                id title handle description descriptionHtml createdAt tags
+                collectionHandles: collections(first: 10) { edges { node { handle } } }
+                featuredImage { url }
+                productMetafields: metafields(identifiers: [
+                  {namespace: "ornaverse", key: "weight"},
+                  {namespace: "ornaverse", key: "quality"},
+                  {namespace: "ornaverse", key: "carat_range"},
+                  {namespace: "ornaverse", key: "lead_time"},
+                  {namespace: "ornaverse", key: "components"}
+                ]) {
+                  key
+                  value
+                }
+                media(first: 20) {
+                  edges {
+                    node {
+                      mediaContentType
+                      ... on MediaImage { image { url altText } }
+                      ... on Video { sources { url mimeType } }
+                    }
+                  }
+                }
+                variants(first: 50) {
+                  edges {
+                    node {
+                      id sku price { amount } compareAtPrice { amount }
+                      availableForSale quantityAvailable selectedOptions { name value }
+                      image { url altText }
+                      metal_weight: metafield(namespace: "ornaverse", key: "metal_weight") { value }
+                      gross_weight: metafield(namespace: "ornaverse", key: "gross_weight") { value }
+                      top_width: metafield(namespace: "ornaverse", key: "top_width") { value }
+                      top_height: metafield(namespace: "ornaverse", key: "top_height") { value }
+                      diamonds_meta: metafield(namespace: "ornaverse", key: "diamonds") { value }
+                      gemstones_meta: metafield(namespace: "ornaverse", key: "gemstones") { value }
+                      components: metafield(namespace: "ornaverse", key: "components") { value }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    `;
+
+    let productsData;
+    if (query && (handle === "all" || !handle)) {
+      const storefrontData = await shopifyStorefrontFetch(SEARCH_QUERY, {
+        query,
+        first: limit,
+        after: cursor || null,
+        filters: finalFilters
       });
-      filter[mKey] = { $in: expandedValues };
+      productsData = storefrontData?.search;
+    } else {
+      const storefrontData = await shopifyStorefrontFetch(COLLECTION_QUERY, {
+        handle: handle,
+        first: limit,
+        after: cursor || null,
+        sortKey: sortConfig.sortKey === "RELEVANCE" ? "BEST_SELLING" : sortConfig.sortKey,
+        reverse: sortConfig.reverse,
+        filters: finalFilters,
+      });
+      productsData = storefrontData?.collectionByHandle?.products;
+    }
+
+    if (!productsData) {
+      return NextResponse.json({ products: [], pagination: { total: 0, hasNextPage: false } });
+    }
+
+    // 2. Fetch Variant Metafields in Bulk (Admin API)
+    const variantGids = [];
+    productsData.edges.forEach(({ node }) => {
+      node.variants.edges.forEach(({ node: v }) => variantGids.push(v.id));
     });
 
-    // Apply variant-level filters using $elemMatch to ensure all variant criteria match the same variant
-    if (Object.keys(variantFilters).length > 0) {
-      const elemMatch = {};
-      Object.entries(variantFilters).forEach(([vKey, vValues]) => {
-        const uniqueValues = [...new Set(vValues)];
-        const expandedValues = [];
-        uniqueValues.forEach(v => {
-          expandedValues.push(v);
-          expandedValues.push(JSON.stringify([v]));
+    const variantConfigs = {};
+    if (variantGids.length > 0) {
+      try {
+        const variantQuery = `
+          query getVariants($ids: [ID!]!) {
+            nodes(ids: $ids) {
+              ... on ProductVariant {
+                id
+                variant_config: metafield(namespace: "DI-GoldPrice", key: "variant_config") { value }
+                metal_weight: metafield(namespace: "ornaverse", key: "metal_weight") { value }
+                gross_weight: metafield(namespace: "ornaverse", key: "gross_weight") { value }
+                top_width: metafield(namespace: "ornaverse", key: "top_width") { value }
+                top_height: metafield(namespace: "ornaverse", key: "top_height") { value }
+                diamonds_meta: metafield(namespace: "ornaverse", key: "diamonds") { value }
+                gemstones_meta: metafield(namespace: "ornaverse", key: "gemstones") { value }
+                components: metafield(namespace: "ornaverse", key: "components") { value }
+              }
+            }
+          }
+        `;
+        const uniqueGids = [...new Set(variantGids)];
+        const CHUNK_SIZE = 100;
+        for (let i = 0; i < uniqueGids.length; i += CHUNK_SIZE) {
+          const chunk = uniqueGids.slice(i, i + CHUNK_SIZE);
+          const adminData = await shopifyAdminFetch(variantQuery, { ids: chunk });
+          adminData?.nodes?.forEach(node => {
+            if (node) {
+              variantConfigs[node.id] = node;
+            }
+          });
+        }
+      } catch (e) {
+        console.warn("⚠️ Bulk variant metadata fetch failed:", e.message);
+      }
+    }
+
+    // 3. Process Products & Calculate Metadata
+    let products = (await Promise.all(
+      productsData.edges.map(async ({ node }) => {
+        const productMetafields = {};
+        node.productMetafields?.forEach(m => {
+          if (m) productMetafields[m.key] = m.value;
         });
-        elemMatch[vKey] = { $in: expandedValues };
-      });
-      filter.variants = { $elemMatch: elemMatch };
-    }
 
-    // Handle price range separately
-    const minPrice = searchParams.get("filter.v.price.gte");
-    const maxPrice = searchParams.get("filter.v.price.lte");
-    if (minPrice || maxPrice) {
-      filter.price = {};
-      if (minPrice) filter.price.$gte = Number(minPrice);
-      if (maxPrice) filter.price.$lte = Number(maxPrice);
-    }
+        const variants = node.variants.edges.map(({ node: v }) => {
+          const options = {};
+          v.selectedOptions.forEach((o) => {
+            options[o.name.toLowerCase()] = o.value;
+          });
 
-    const { filter: resolvedFilter, fallbackFilter, strategy } = await resolveSearchMatch(db, filter, query || "");
+          let dynamic = {};
+          let diamondDiscount = 0;
+          let makingDiscount = 0;
+          let fallbackDiamonds = [];
 
-    let finalSort = sortConfig;
-    const projection = {
-      description: 0,
-      "reviews.list": 0,
-    };
+          const variantData = variantConfigs[v.id];
+          const configValue = variantData?.variant_config?.value;
 
-    // If sorting by relevance, check if we actually did a text search
-    if (sort === "relevance" && strategy === "text") {
-      projection.score = { $meta: "textScore" };
-    } else if (sort === "relevance") {
-      // If no text search was performed, fallback to featured sort
-      finalSort = SORT_MAP.featured;
-    }
+          if (configValue) {
+            try {
+              const config = JSON.parse(configValue);
+              const breakup = calculatePriceBreakup(config, metalRates, stonePricingDB);
+              dynamic = {
+                carat: breakup.diamond.carat,
+                clarity: breakup.diamond.clarity,
+                color: breakup.diamond.color,
+                weight: breakup.metal.weight,
+                diamondCharges: breakup.diamond.final,
+                components: configValue
+              };
+              diamondDiscount = breakup.diamond.discount_percent || 0;
+              makingDiscount = breakup.making_charges.discount_percent || 0;
 
+              if (config.advanced_stone_config) {
+                fallbackDiamonds = config.advanced_stone_config.filter(s => s.stone_type === 'diamond').map(s => ({
+                   quality: s.pricing_id,
+                   pieces: s.stone_quantity,
+                   weight: s.stone_weight
+                }));
+              }
+            } catch (e) {}
+          }
 
-    let products = await productsCollection
-      .find(resolvedFilter)
-      .project(projection)
-      .sort(finalSort)
-      .skip((page - 1) * limit)
-      .limit(limit)
-      .toArray();
+          const getOpt = (keys) => {
+            for (const key of keys) {
+              const lowerKey = key.toLowerCase();
+              if (options[lowerKey] !== undefined && options[lowerKey] !== null) return options[lowerKey];
+            }
+            return null;
+          };
 
-    let total = await productsCollection.countDocuments(resolvedFilter);
+          return {
+            id: v.id.split("/").pop(),
+            shopifyId: v.id,
+            sku: v.sku,
+            size: options.size || null,
+            color: getOpt(["color", "metal", "metal color", "material color"]),
+            carat: dynamic.carat ?? getOpt(["carat", "carat weight"]),
+            clarity: dynamic.clarity ?? getOpt(["clarity"]),
+            diamond_color: dynamic.color ?? getOpt(["diamond color"]),
+            weight: dynamic.weight ?? getOpt(["weight"]),
+            price: Number(v.price.amount),
+            compare_price: v.compareAtPrice ? Number(v.compareAtPrice.amount) : null,
+            inStock: v.availableForSale === true && Number(v.quantityAvailable || 0) > 0,
+            image: v.image?.url || null,
+            altText: v.image?.altText || "",
+            metafields: {
+                metal_purity: getOpt(["metal purity", "purity"]),
+                metal_weight: dynamic.weight || v.metal_weight?.value || variantData?.metal_weight?.value,
+                gross_weight: v.gross_weight?.value || variantData?.gross_weight?.value,
+                top_width: v.top_width?.value || variantData?.top_width?.value,
+                top_height: v.top_height?.value || variantData?.top_height?.value,
+                diamonds: v.diamonds_meta?.value ? JSON.parse(v.diamonds_meta.value) : (variantData?.diamonds_meta?.value ? JSON.parse(variantData.diamonds_meta.value) : (fallbackDiamonds.length > 0 ? fallbackDiamonds : [])),
+                gemstones: v.gemstones_meta?.value ? JSON.parse(v.gemstones_meta.value) : (variantData?.gemstones_meta?.value ? JSON.parse(variantData.gemstones_meta.value) : []),
+                components: v.components?.value || variantData?.components?.value || dynamic.components,
+                variant_config: configValue
+            },
+            diamondDiscount,
+            makingDiscount
+          };
+        });
 
-    // If no products found and we have a query, try fallback broad search
-    if (products.length === 0 && query && fallbackFilter) {
-      // Create a clean projection for fallback (no score metadata as fallback uses regex, not $text)
-      const fallbackProjection = { ...projection };
-      delete fallbackProjection.score;
+        // 9KT Collection Filtering
+        if (handle === "9kt-collection") {
+            const has9kt = variants.some(v => String(v.color || v.metafields?.metal_purity || "").includes("9KT"));
+            if (!has9kt) return null;
+        }
 
-      products = await productsCollection
-        .find(fallbackFilter)
-        .project(fallbackProjection)
-        .sort(sort === "relevance" ? { title: 1 } : finalSort)
-        .skip((page - 1) * limit)
-        .limit(limit)
-        .toArray();
-      total = await productsCollection.countDocuments(fallbackFilter);
+        let selectedVariant = variants.find((v) => v.inStock) || variants[0];
+
+        const images = [];
+        let video = null;
+
+        node.media?.edges?.forEach(({ node: m }) => {
+          if (m.mediaContentType === "IMAGE") {
+            images.push({
+              url: m.image.url,
+              alt: m.image.altText || "",
+            });
+          } else if (m.mediaContentType === "VIDEO") {
+            video = {
+                url: m.sources?.[0]?.url,
+                mimeType: m.sources?.[0]?.mimeType,
+                preview: node.featuredImage?.url,
+                sources: m.sources
+            };
+          }
+        });
+
+        const thirtyDaysAgo = new Date();
+        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+        const isNew = new Date(node.createdAt) > thirtyDaysAgo;
+
+        const labelTag = node.tags?.find(tag =>
+          ["best seller", "hot", "trending", "limited"].includes(tag.toLowerCase())
+        );
+
+        return {
+          id: node.id.split("/").pop(),
+          shopifyId: node.id,
+          title: node.title,
+          handle: node.handle,
+          collectionHandles: node.collectionHandles?.edges?.map(e => e.node.handle) || [],
+          description: node.description,
+          descriptionHtml: node.descriptionHtml,
+          productMetafields,
+          video,
+          isNew: isNew,
+          label: labelTag || (isNew ? "New" : null),
+          images,
+          price: selectedVariant.price,
+          compare_price: selectedVariant.compare_price,
+          selectedColor: selectedVariant.color,
+          carat: selectedVariant.carat,
+          clarity: selectedVariant.clarity,
+          diamond_color: selectedVariant.diamond_color,
+          weight: selectedVariant.weight,
+          colors: [...new Set(variants.map((v) => v.color).filter(Boolean))],
+          image: selectedVariant.image || node.featuredImage?.url,
+          altText: selectedVariant.altText || "",
+          variants,
+          diamondDiscount: selectedVariant.diamondDiscount,
+          makingDiscount: selectedVariant.makingDiscount,
+          hasSimilar: true,
+          reviewStats: { count: 0, average: 0 }
+        };
+      })
+    )).filter(Boolean);
+
+    // 4. Fetch Review Stats from Nector in Parallel
+    try {
+      await Promise.all(
+        products.map(async (p) => {
+          try {
+            const reviews = await fetchNectorReviews(p.shopifyId);
+            p.reviewStats = {
+              count: reviews.count || 0,
+              average: reviews.average || 0
+            };
+          } catch (e) {
+            p.reviewStats = { count: 0, average: 0 };
+          }
+        })
+      );
+    } catch (e) {
+      console.warn("⚠️ Parallel review stats fetch failed:", e.message);
     }
 
     return NextResponse.json({
-      products: products.map(p => ({
-        ...p,
-        tags: Array.isArray(p.tags) ? p.tags : (typeof p.tags === 'string' ? p.tags.split(',').map(t => t.trim()).filter(Boolean) : []),
-        reviews: p.reviews || (p.reviewStats?.usedFallback ? null : p.reviewStats) || null
-      })),
-      pagination: { total, page, limit, totalPages: Math.ceil(total / limit) }
+      products,
+      pagination: {
+        hasNextPage: productsData.pageInfo.hasNextPage,
+        endCursor: productsData.pageInfo.endCursor,
+        total: 0
+      }
+    }, {
+      headers: {
+        'Cache-Control': 'public, s-maxage=3600, stale-while-revalidate=59'
+      }
     });
 
   } catch (error) {
     console.error("Search Error:", error);
-    return NextResponse.json({ error: "Failed to search products", message: error.message }, { status: 500 });
+    return NextResponse.json({ error: "Failed to search products" }, { status: 500 });
   }
 }
