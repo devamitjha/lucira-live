@@ -11,7 +11,7 @@
             "__typename": "Collection",
             "handle": "bestsellers",
             "productsCount": {
-              "count": 100
+              "count": 99
             },
             "image": null,
             "metafields": {
@@ -2600,7 +2600,7 @@
             "__typename": "Collection",
             "handle": "earrings",
             "productsCount": {
-              "count": 643
+              "count": 652
             },
             "image": null,
             "metafields": {
@@ -2722,7 +2722,7 @@
                     "__typename": "Collection",
                     "handle": "new-arrivals-earrings",
                     "productsCount": {
-                      "count": 64
+                      "count": 73
                     },
                     "image": null,
                     "metafields": {
@@ -3400,7 +3400,7 @@
                     "__typename": "Collection",
                     "handle": "earrings-yellow-gold",
                     "productsCount": {
-                      "count": 636
+                      "count": 645
                     },
                     "image": null,
                     "metafields": {
@@ -3510,7 +3510,7 @@
                     "__typename": "Collection",
                     "handle": "earrings-below-15k",
                     "productsCount": {
-                      "count": 42
+                      "count": 44
                     },
                     "image": null,
                     "metafields": {
@@ -3526,7 +3526,7 @@
                     "__typename": "Collection",
                     "handle": "earrings-between-15k-30k",
                     "productsCount": {
-                      "count": 142
+                      "count": 149
                     },
                     "image": null,
                     "metafields": {
@@ -3542,7 +3542,7 @@
                     "__typename": "Collection",
                     "handle": "earrings-between-30k-50k",
                     "productsCount": {
-                      "count": 259
+                      "count": 262
                     },
                     "image": null,
                     "metafields": {
@@ -3577,7 +3577,7 @@
                     "__typename": "Collection",
                     "handle": "earrings-between-50k-75k",
                     "productsCount": {
-                      "count": 185
+                      "count": 187
                     },
                     "image": null,
                     "metafields": {
@@ -3647,7 +3647,7 @@
                     "__typename": "Collection",
                     "handle": "earrings-between-100k-150k",
                     "productsCount": {
-                      "count": 99
+                      "count": 95
                     },
                     "image": null,
                     "metafields": {
@@ -3663,7 +3663,7 @@
                     "__typename": "Collection",
                     "handle": "earrings-above-150k",
                     "productsCount": {
-                      "count": 842
+                      "count": 851
                     },
                     "image": null,
                     "metafields": {
@@ -3681,7 +3681,7 @@
                 "__typename": "Collection",
                 "handle": "earrings-yellow-gold",
                 "productsCount": {
-                  "count": 636
+                  "count": 645
                 },
                 "image": null,
                 "metafields": {
@@ -3738,7 +3738,7 @@
             "__typename": "Collection",
             "handle": "jewelry",
             "productsCount": {
-              "count": 2511
+              "count": 2518
             },
             "image": null,
             "metafields": {
@@ -4678,7 +4678,7 @@
                 "__typename": "Collection",
                 "handle": "gold-jewelry",
                 "productsCount": {
-                  "count": 101
+                  "count": 108
                 },
                 "image": null,
                 "metafields": {
@@ -4778,7 +4778,7 @@
                     "__typename": "Collection",
                     "handle": "gold-earrings",
                     "productsCount": {
-                      "count": 35
+                      "count": 44
                     },
                     "image": null,
                     "metafields": {
@@ -6412,7 +6412,7 @@
                     "__typename": "Collection",
                     "handle": "solitaires-between-100k-150k",
                     "productsCount": {
-                      "count": 119
+                      "count": 118
                     },
                     "image": null,
                     "metafields": {
@@ -6475,7 +6475,7 @@
                     "__typename": "Collection",
                     "handle": "solitaires-between-150k-200k",
                     "productsCount": {
-                      "count": 28
+                      "count": 29
                     },
                     "image": null,
                     "metafields": {
@@ -7720,5 +7720,5 @@
       ]
     }
   ],
-  "updatedAt": "2026-05-18T06:20:27.481Z"
+  "updatedAt": "2026-05-18T10:23:49.848Z"
 }
